@@ -1,151 +1,158 @@
-"""The base16 palette selection algorithm.
+"""Two-stage, synthesis-based base16 generation.
 
-This is a faithful port of the original ``autopalette`` Python heredoc, with two
-deliberate improvements:
+Instead of filtering an extracted pool and hoping it contains colours that fit
+rigid bands, the palette is *constructed* so it is always complete and readable:
 
-* The module-level mutable ``currentMaximumBackgroundBrightnessThresholdIndex``
-  global is replaced by explicit state on :class:`PaletteBuilder`.
-* De-duplication preserves input order (``dict.fromkeys``) instead of going
-  through ``set()``, so the result is *reproducible* — the original depended on
-  hash-randomised set ordering for the accent roles, which made successive runs
-  on the same wallpaper produce different palettes.
+* Stage A - a derived neutral luminance ramp (base00..base07), tinted by the
+  wallpaper's dominant hue. Always monotonic and readable; independent of whether
+  the pool happens to contain good greys.
+* Stage B - 8 hue-slotted accents (base08..base0F). The middle path: base08/0B/0D
+  (red/green/blue) are anchored to canonical hues so syntax highlighting keeps
+  its meaning; the rest are filled from the wallpaper's prominent hues, falling
+  back to gap-filling synthesis. Every accent is harmonised to a consistent
+  lightness/chroma and nudged until it clears the contrast floor.
+
+The mode (dark/light) is chosen from the image's mean luminance when ``auto``.
 """
 
 from __future__ import annotations
 
-import logging
 import random
-from typing import Callable
 
 from . import color
 from .config import PaletteConfig
-
-log = logging.getLogger(__name__)
-
-# base16 roles in canonical darkest-to-lightest order. base00 (the background)
-# is resolved first; contrast-based selectors compare against it.
-BASE16_ROLES: tuple[str, ...] = (
-    "base00",  # Default Background
-    "base01",  # Lighter Background (status bars)
-    "base02",  # Selection Background
-    "base03",  # Comments, Invisibles, Line Highlighting
-    "base04",  # Dark Foreground (status bars)
-    "base05",  # Default Foreground, Caret, Delimiters, Operators
-    "base06",  # Light Foreground (rarely used)
-    "base07",  # Light Background (rarely used)
-    "base08",  # Variables, Markup Lists, Diff Deleted
-    "base09",  # Integers, Booleans, Constants, Markup Link Url
-    "base0A",  # Classes, Markup Bold, Search Text Background
-    "base0B",  # Strings, Markup Code, Diff Inserted
-    "base0C",  # Support, Regex, Escape Characters, Markup Quotes
-    "base0D",  # Functions, Methods, Headings
-    "base0E",  # Keywords, Storage, Selector, Diff Changed
-    "base0F",  # Deprecated, Embedded Language Tags
+from .extract.base import Extraction
+from .roles import (
+    ACCENT_ROLES,
+    ANCHOR_ROLES,
+    BASE16_ROLES,
+    CANONICAL_HUE,
+    RAMP_ROLES,
 )
 
-# Background-style roles get a forced-dark, brightness-clamped pick; comment /
-# foreground roles get the darkest unused high-contrast colour; accent roles get
-# a bright high-contrast colour.
-_FORCE_DARK_ROLES = frozenset({"base00", "base01", "base02", "base06", "base07"})
-_DARK_HIGH_CONTRAST_ROLES = frozenset({"base03", "base04", "base05"})
+# Eased ramp positions (0..1) for base00..base07: backgrounds cluster near the
+# dark end, foregrounds near the light end, like hand-made base16 schemes.
+# base03 (comments) is kept high enough to clear the comment contrast floor.
+_RAMP_T = (0.00, 0.05, 0.11, 0.50, 0.66, 0.80, 0.90, 1.00)
+
+# base0F (brown / deprecated): a darker, muted variant rather than a rainbow hue.
+_BROWN_HUE_ROLE = "base09"  # follow the orange slot's neighbourhood
 
 
-class PaletteBuilder:
-    """Stateful selector that assigns one colour from ``pool`` to each role."""
-
-    def __init__(self, config: PaletteConfig, rng: random.Random) -> None:
-        self.config = config
-        self.rng = rng
-        self.colors: dict[str, str] = {}
-        # Drives both "Nth darkest background" selection and the lightness clamp,
-        # advancing only when a force-dark role is filled (mirrors the original).
-        self._bg_index = 0
-
-    @property
-    def background(self) -> str:
-        return self.colors[BASE16_ROLES[0]]
-
-    def _used(self) -> set[str]:
-        return set(self.colors.values())
-
-    # -- selection strategies -------------------------------------------------
-
-    def _pick_force_dark(self, pool: list[str]) -> str | None:
-        """Pick the Nth-darkest colour and clamp its lightness so backgrounds
-        stay dark and get progressively lighter across successive calls."""
-        viable = sorted(pool, key=color.brightness)
-        thresholds = self.config.background_brightness_thresholds
-        idx = self._bg_index
-        if idx < len(viable) and idx < len(thresholds):
-            chosen = viable[idx]
-            h, l, s = color.hex_to_hls(chosen)
-            clamped = (h, min(l, thresholds[idx]), s)
-            self._bg_index += 1
-            return color.hls_to_hex(clamped)
-        return None
-
-    def _pick_dark_high_contrast(self, pool: list[str]) -> str | None:
-        """Darkest unused colour within comment..text contrast of the background."""
-        bg = self.background
-        viable = sorted(
-            (c for c in pool if color.within_contrast(
-                c, bg, self.config.min_comment_contrast, self.config.max_text_contrast)),
-            key=color.brightness,
-        )
-        used = self._used()
-        return next((c for c in viable if c not in used), None)
-
-    def _pick_bright_high_contrast(self, pool: list[str]) -> str | None:
-        """A bright colour within text contrast of the background, preferring an
-        unused one but falling back to a random viable colour."""
-        bg = self.background
-        viable = [
-            c for c in pool
-            if color.within_contrast(
-                c, bg, self.config.min_text_contrast, self.config.max_text_contrast)
-        ]
-        if not viable:
-            return None
-        used = self._used()
-        return next((c for c in viable if c not in used), self.rng.choice(viable))
-
-    def _selector_for(self, role: str) -> Callable[[list[str]], "str | None"]:
-        if role in _FORCE_DARK_ROLES:
-            return self._pick_force_dark
-        if role in _DARK_HIGH_CONTRAST_ROLES:
-            return self._pick_dark_high_contrast
-        return self._pick_bright_high_contrast
-
-    # -- driver ---------------------------------------------------------------
-
-    def build(self, pool: list[str]) -> dict[str, str]:
-        for role in BASE16_ROLES:
-            chosen = self._selector_for(role)(pool)
-            if chosen is None:
-                log.warning("role %s could not satisfy its constraints; picking at random", role)
-                chosen = self.rng.choice(pool)
-            self.colors[role] = chosen
-            log.debug("selected %s for %s", chosen, role)
-        return dict(self.colors)
+def _decide_dark(extraction: Extraction, cfg: PaletteConfig) -> bool:
+    if cfg.mode == "dark":
+        return True
+    if cfg.mode == "light":
+        return False
+    return extraction.mean_luminance < cfg.auto_luminance_split
 
 
-def generate_palette(
-    colors: list[str],
-    config: PaletteConfig | None = None,
-    *,
-    rng: random.Random | None = None,
-) -> dict[str, str]:
-    """Map a pool of candidate ``#rrggbb`` colours onto the 16 base16 roles.
+def _dominant_hue(extraction: Extraction, cfg: PaletteConfig) -> float | None:
+    vibrants = extraction.vibrants(cfg)
+    return vibrants[0].oklch.h if vibrants else None
 
-    Order-preserving de-duplication is applied first. Raises ``ValueError`` for
-    an empty pool.
-    """
-    config = config or PaletteConfig()
-    rng = rng or random.Random()
 
-    pool = [c.strip() for c in colors if c.strip()]
-    pool = list(dict.fromkeys(pool))  # de-dupe, preserve order
-    if not pool:
-        raise ValueError("colour pool is empty; extractor returned no colours")
+def _build_ramp(extraction: Extraction, cfg: PaletteConfig, dark: bool) -> dict[str, str]:
+    if dark:
+        lo, hi = cfg.dark_bg_lightness, cfg.dark_fg_lightness
+    else:
+        lo, hi = cfg.light_bg_lightness, cfg.light_fg_lightness  # lo > hi (descending)
 
-    return PaletteBuilder(config, rng).build(pool)
+    hue = _dominant_hue(extraction, cfg)
+    tint_c = cfg.neutral_tint_chroma if hue is not None else 0.0
+    hue = hue or 0.0
+
+    ramp: dict[str, str] = {}
+    for role, t in zip(RAMP_ROLES, _RAMP_T):
+        L = lo + (hi - lo) * t
+        ramp[role] = color.OKLCh(L, tint_c, hue).to_hex()
+    return ramp
+
+
+def _ensure_contrast(c: color.OKLCh, bg: str, floor: float, dark: bool) -> color.OKLCh:
+    """Nudge lightness until the colour clears the contrast floor against bg."""
+    step = 0.02
+    for _ in range(45):
+        if color.contrast_ratio(c.to_hex(), bg) >= floor:
+            break
+        new_L = c.L + step if dark else c.L - step
+        new_L = max(0.04, min(0.98, new_L))
+        if new_L == c.L:
+            break
+        c = c.replace(L=new_L)
+    return c
+
+
+def _harmonise(hue: float, cfg: PaletteConfig, bg: str, dark: bool) -> str:
+    """Place a hue at the harmonised accent lightness/chroma, then ensure contrast."""
+    c = color.OKLCh(cfg.accent_lightness(dark), cfg.accent_chroma(dark), hue)
+    return _ensure_contrast(c, bg, cfg.text_contrast_floor, dark).to_hex()
+
+
+def _pick_fill_hue(candidates: list[float], chosen: list[float],
+                   min_sep: float) -> float:
+    """Prefer a wallpaper hue far enough from already-chosen accents; otherwise
+    synthesise the hue that maximises separation (largest gap on the wheel)."""
+    for h in candidates:
+        if all(color.hue_distance(h, c) >= min_sep for c in chosen):
+            candidates.remove(h)
+            return h
+    # Synthesis fallback: hue in the middle of the widest gap between chosen hues.
+    if not chosen:
+        return 0.0
+    ring = sorted(chosen)
+    best_hue, best_gap = ring[0], -1.0
+    for a, b in zip(ring, ring[1:] + [ring[0] + 360.0]):
+        gap = b - a
+        if gap > best_gap:
+            best_gap, best_hue = gap, (a + gap / 2.0) % 360.0
+    return best_hue
+
+
+def _build_accents(extraction: Extraction, cfg: PaletteConfig, dark: bool,
+                   bg: str) -> dict[str, str]:
+    accents: dict[str, str] = {}
+    chosen_hues: list[float] = []
+
+    # 1. Anchors: red / green / blue forced to canonical hues.
+    for role in ANCHOR_ROLES:
+        hue = CANONICAL_HUE[role]
+        accents[role] = _harmonise(hue, cfg, bg, dark)
+        chosen_hues.append(hue)
+
+    # 2. Fill slots from the wallpaper's prominent vibrant hues (most weighted
+    #    first), synthesising into gaps when the wallpaper runs out. Build with a
+    #    margin above the scored minimum so 8-bit hex quantisation can't push two
+    #    accents under the separation threshold.
+    sep = cfg.min_accent_hue_separation + 6.0
+    vibrant_hues = [s.oklch.h for s in extraction.vibrants(cfg)]
+    fill_roles = ("base09", "base0A", "base0C", "base0E")  # orange/yellow/cyan/magenta
+    for role in fill_roles:
+        hue = _pick_fill_hue(vibrant_hues, chosen_hues, sep)
+        accents[role] = _harmonise(hue, cfg, bg, dark)
+        chosen_hues.append(hue)
+
+    # 3. base0F: a muted brown near the orange neighbourhood (exempt from rules).
+    brown_hue = color.hex_to_oklab(accents[_BROWN_HUE_ROLE]).h
+    brown = color.OKLCh(
+        cfg.accent_lightness(dark) * (0.78 if dark else 1.0),
+        cfg.accent_chroma(dark) * 0.7,
+        brown_hue,
+    )
+    accents["base0F"] = _ensure_contrast(brown, bg, cfg.comment_contrast_min, dark).to_hex()
+
+    return accents
+
+
+def synthesize(extraction: Extraction, config: PaletteConfig | None = None,
+               *, rng: random.Random | None = None) -> dict[str, str]:
+    """Construct a complete, readable base16 palette from an extraction."""
+    cfg = config or PaletteConfig()
+    dark = _decide_dark(extraction, cfg)
+    ramp = _build_ramp(extraction, cfg, dark)
+    accents = _build_accents(extraction, cfg, dark, ramp["base00"])
+    palette = {**ramp, **accents}
+    return {role: palette[role] for role in BASE16_ROLES}
+
+
+__all__ = ["synthesize", "BASE16_ROLES", "ACCENT_ROLES"]

@@ -1,54 +1,68 @@
-"""Default, self-contained extractor built on Pillow.
+"""Default extractor: Pillow decode + scikit-learn k-means in OKLab.
 
-Quantises the image with median-cut, ranks the resulting palette by pixel
-frequency, then merges colours closer than ``threshold`` in RGB space so the
-pool spans a range of distinct hues rather than many near-identical shades.
-Unlike the original pipeline this needs no external binaries (no ``schemer2``)
-and no ``exiftool`` — Pillow handles decoding and sizing.
+Clusters image pixels in perceptually-uniform OKLab space, then merges clusters
+closer than an adaptive ΔE so the candidate set spans genuinely distinct
+colours. Cluster weights (pixel coverage) drive both the mean-luminance estimate
+and the prominence ordering the synthesiser relies on. No external binaries and
+no exiftool — Pillow handles decoding and sizing.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 from PIL import Image
+from sklearn.cluster import KMeans
 
 from .. import color
+from ..config import PaletteConfig
+from .base import ColorSample, Extraction
 
-# Cap working resolution: dominant-colour results are stable well below full
-# resolution and this keeps quantisation fast on large wallpapers.
-_MAX_DIMENSION = 512
-# Quantise to a generous palette so frequency ranking and de-duplication have
-# enough material to produce a varied 16-colour pool.
-_QUANTIZE_COLORS = 64
+# Working resolution: dominant-colour structure is stable far below full res.
+_MAX_DIMENSION = 256
 
 
 class PillowExtractor:
-    def extract(self, image: Path, *, count: int = 16, threshold: int = 70) -> list[str]:
+    def extract(self, image: Path, cfg: PaletteConfig) -> Extraction:
         with Image.open(image) as img:
             img = img.convert("RGB")
             img.thumbnail((_MAX_DIMENSION, _MAX_DIMENSION))
-            quantized = img.quantize(colors=_QUANTIZE_COLORS, method=Image.Quantize.MEDIANCUT)
+            pixels = np.asarray(img, dtype=np.float64).reshape(-1, 3) / 255.0
 
-        palette = quantized.getpalette() or []
-        # getcolors -> list of (pixel_count, palette_index); most frequent first.
-        counts = sorted(quantized.getcolors() or [], key=lambda c: c[0], reverse=True)
+        # Cluster in OKLab (perceptually uniform) rather than raw RGB.
+        lab = color.srgb_to_oklab_arr(pixels)
+        k = min(cfg.cluster_count, len(np.unique(lab, axis=0)))
+        if k < 1:
+            return Extraction(samples=(), mean_luminance=0.0)
 
-        ranked: list[color.RGB] = []
-        for _, index in counts:
-            base = index * 3
-            rgb = (palette[base], palette[base + 1], palette[base + 2])
-            ranked.append(rgb)
+        km = KMeans(n_clusters=k, n_init=4, random_state=0)
+        labels = km.fit_predict(lab)
+        centroids_lab = km.cluster_centers_
+        weights = np.bincount(labels, minlength=k).astype(np.float64)
+        weights /= weights.sum()
 
-        merged = self._merge_similar(ranked, threshold)
-        return [color.rgb_to_hex(rgb) for rgb in merged[:count]]
+        centroids_rgb = color.oklab_to_srgb_arr(centroids_lab)
+        samples = [
+            ColorSample.from_hex(color.rgb_to_hex(tuple(rgb * 255.0)), float(w))
+            for rgb, w in zip(centroids_rgb, weights)
+        ]
+        samples = _merge_similar(samples, cfg.merge_delta_e)
+        samples.sort(key=lambda s: s.weight, reverse=True)
 
-    @staticmethod
-    def _merge_similar(colors: list[color.RGB], threshold: int) -> list[color.RGB]:
-        """Drop colours within ``threshold`` RGB distance of an already-kept one,
-        preserving frequency order."""
-        kept: list[color.RGB] = []
-        for rgb in colors:
-            if all(color.rgb_distance(rgb, k) >= threshold for k in kept):
-                kept.append(rgb)
-        return kept
+        mean_lum = float(sum(color.relative_luminance(s.hex) * s.weight for s in samples))
+        return Extraction(samples=tuple(samples), mean_luminance=mean_lum)
+
+
+def _merge_similar(samples: list[ColorSample], delta_e: float) -> list[ColorSample]:
+    """Greedily fold samples within ΔE of a heavier kept sample, accumulating
+    their weight onto the kept one."""
+    kept: list[ColorSample] = []
+    for s in sorted(samples, key=lambda s: s.weight, reverse=True):
+        match = next((k for k in kept if color.delta_e(s.hex, k.hex) < delta_e), None)
+        if match is None:
+            kept.append(s)
+        else:
+            idx = kept.index(match)
+            kept[idx] = ColorSample(match.hex, match.oklch, match.weight + s.weight)
+    return kept

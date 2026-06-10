@@ -1,26 +1,14 @@
 """Pluggable wallpaper colour extractors.
 
-Each backend turns an image into a flat list of ``#rrggbb`` candidate colours
-that the palette algorithm then maps onto base16 roles.
+Each backend turns an image into an :class:`Extraction` (weighted OKLCh samples
++ mean luminance) that the palette synthesiser maps onto base16 roles.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Protocol, runtime_checkable
+from .base import ColorSample, Extraction, Extractor
 
-
-@runtime_checkable
-class Extractor(Protocol):
-    """A colour extractor backend."""
-
-    def extract(self, image: Path, *, count: int, threshold: int) -> list[str]:
-        """Return up to ``count`` dominant ``#rrggbb`` colours from ``image``.
-
-        ``threshold`` controls how aggressively near-duplicate colours are
-        merged; its exact meaning is backend-specific.
-        """
-        ...
+AVAILABLE = ("pillow", "schemer2")
 
 
 def get_extractor(name: str, *, schemer2_bin: str | None = None) -> Extractor:
@@ -36,4 +24,4 @@ def get_extractor(name: str, *, schemer2_bin: str | None = None) -> Extractor:
     raise ValueError(f"unknown extractor {name!r} (expected 'pillow' or 'schemer2')")
 
 
-AVAILABLE = ("pillow", "schemer2")
+__all__ = ["AVAILABLE", "ColorSample", "Extraction", "Extractor", "get_extractor"]

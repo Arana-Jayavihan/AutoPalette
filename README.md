@@ -10,6 +10,29 @@ It is a pure `wallpaper → palette` transform — it knows nothing about any
 particular NixOS flake, `options.nix`, or output location. The flake-specific
 wiring lives in the provided Home-Manager module and your own glue script.
 
+## How it works
+
+Rather than filtering extracted colours and hoping a wallpaper happens to contain
+ones that fit, the palette is **constructed** in perceptually-uniform OKLab space
+so it is always complete and readable:
+
+* **Extraction** — Pillow decodes the image; scikit-learn k-means clusters the
+  pixels in OKLab; clusters are merged by ΔE and split into *neutral* and
+  *vibrant* pools (with pixel-coverage weights).
+* **Neutral ramp (base00–07)** — a derived, monotonic lightness ramp tinted by
+  the dominant hue. Always smooth and readable, independent of the pool.
+* **Accents (base08–0F)** — the *middle path*: base08/0B/0D (red/green/blue) are
+  anchored to canonical hues so syntax highlighting keeps its meaning, while the
+  rest are filled from the wallpaper's prominent hues (synthesising into gaps
+  when it runs out). Every accent is harmonised to a consistent lightness/chroma
+  and nudged until it clears the WCAG contrast floor.
+* **Mode** — dark or light is chosen from the wallpaper's mean luminance
+  (`--mode auto`), or forced with `--mode dark|light`.
+
+A built-in quality scorer (`autopalette score`) measures contrast, ramp
+monotonicity, accent separation and cohesion. Across an 88-wallpaper corpus the
+generator scores **100% passing** (mean ≈ 96/100).
+
 ## Usage
 
 ```sh
@@ -22,6 +45,14 @@ autopalette generate --wallpaper ~/wall.jpg --format nix --out custom.nix
 # JSON or an HTML swatch preview
 autopalette generate --wallpaper ~/wall.jpg --format json
 autopalette generate --wallpaper ~/wall.jpg --format html --out palette.html
+
+# force a light or dark theme instead of auto
+autopalette generate --wallpaper ~/wall.jpg --mode dark
+
+# score quality: a single wallpaper, an existing JSON palette, or a whole folder
+autopalette score --wallpaper ~/wall.jpg
+autopalette score --palette palette.json
+autopalette score --corpus ~/wallpapers      # exits non-zero if < 95% pass
 ```
 
 Run it without installing:
@@ -35,19 +66,18 @@ nix run github:Arana-Jayavihan/autopalette -- generate --wallpaper ~/wall.jpg
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--wallpaper` | (required) | Source image path |
+| `--mode` | `auto` | `auto` (from luminance), `dark`, or `light` |
 | `--extractor` | `pillow` | Colour backend: `pillow` (self-contained) or `schemer2` |
 | `--format` | `nix` | `nix`, `json`, or `html` |
 | `--out` | stdout | Output file |
-| `--colors` | `16` | Candidate colour pool size |
-| `--threshold` | `70` | Near-duplicate merge distance |
 | `--name` / `--slug` / `--author` | `auto-generated` / `Lucifer 🍃` | Palette metadata |
 | `--seed` | random | RNG seed for reproducible output |
 | `--schemer2-bin` | PATH | `schemer2` binary (schemer2 backend only) |
 
 ## Extractors
 
-* **pillow** (default) — extracts dominant colours with Pillow (median-cut +
-  frequency ranking + near-duplicate merging). No external binaries.
+* **pillow** (default) — Pillow decode + scikit-learn k-means in OKLab, with
+  adaptive ΔE merging. No external binaries.
 * **schemer2** — shells out to the [`schemer2`](https://github.com/Arana-Jayavihan/schemer2)
   Go binary, reproducing the original pipeline. The binary is resolved from
   `--schemer2-bin`, `$AUTOPALETTE_SCHEMER2`, or `$PATH`. This flake also ships it
@@ -97,7 +127,9 @@ palette file; pass a path to override the default wallpaper.
 ## Development
 
 ```sh
-nix develop          # python + pillow + pytest + ruff
+nix develop          # python + pillow + numpy + scikit-learn + pytest + ruff
 pytest               # run the test suite
 ruff check src tests
 ```
+
+Runtime dependencies: `pillow`, `numpy`, `scikit-learn`.
