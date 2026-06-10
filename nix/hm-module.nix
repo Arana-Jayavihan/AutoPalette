@@ -19,8 +19,8 @@ let
     exec ${cfg.package}/bin/autopalette generate \
       --wallpaper "''${1:-${cfg.wallpaper}}" \
       --extractor ${cfg.extractor} \
+      --mode ${cfg.mode} \
       ${schemer2Bin} \
-      --threshold ${toString cfg.threshold} \
       --name ${lib.escapeShellArg cfg.name} \
       --author ${lib.escapeShellArg cfg.author} \
       --format ${cfg.format} \
@@ -59,10 +59,10 @@ in
       '';
     };
 
-    threshold = lib.mkOption {
-      type = lib.types.int;
-      default = 70;
-      description = "Near-duplicate colour merge threshold.";
+    mode = lib.mkOption {
+      type = lib.types.enum [ "dark" "light" "auto" ];
+      default = "auto";
+      description = "Theme mode; auto picks dark/light from wallpaper luminance.";
     };
 
     name = lib.mkOption {
