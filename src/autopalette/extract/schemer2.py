@@ -1,9 +1,10 @@
 """Opt-in extractor that shells out to the ``schemer2`` Go binary.
 
-This reproduces the original pipeline's colour extraction. The binary is located
-via (in order) an explicit path, ``$AUTOPALETTE_SCHEMER2``, or ``$PATH``. The
-package never hard-depends on it; selecting this backend without the binary
-present raises a clear error.
+Reproduces the original pipeline's colour extraction, then adapts the bare hex
+list into an :class:`Extraction` so it flows through the same OKLab synthesiser
+(and benefits from the harmonisation). The binary is located via (in order) an
+explicit path, ``$AUTOPALETTE_SCHEMER2``, or ``$PATH``; the package never
+hard-depends on it.
 """
 
 from __future__ import annotations
@@ -14,6 +15,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from ..config import PaletteConfig
+from .base import Extraction
+
 
 class Schemer2Extractor:
     def __init__(self, binary: str | None = None) -> None:
@@ -23,7 +27,7 @@ class Schemer2Extractor:
             or shutil.which("schemer2")
         )
 
-    def extract(self, image: Path, *, count: int = 16, threshold: int = 70) -> list[str]:
+    def extract(self, image: Path, cfg: PaletteConfig) -> Extraction:
         if not self.binary:
             raise RuntimeError(
                 "schemer2 backend selected but the 'schemer2' binary was not found "
@@ -39,18 +43,18 @@ class Schemer2Extractor:
                     "-format", "img::colors",
                     "-in", str(image),
                     "-out", out_path,
-                    "-threshold", str(threshold),
+                    "-threshold", str(int(cfg.merge_delta_e * 1000)),
                 ],
                 check=True,
                 capture_output=True,
                 text=True,
             )
             with open(out_path, "r", encoding="utf-8") as fh:
-                colors = [line.strip() for line in fh if line.strip()]
+                hexes = [line.strip() for line in fh if line.strip()]
         finally:
             try:
                 os.unlink(out_path)
             except OSError:
                 pass
 
-        return colors[:count] if count else colors
+        return Extraction.from_hexes(hexes)

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from .config import PaletteConfig
-from .palette import BASE16_ROLES, generate_palette
+from .palette import synthesize
+from .quality import score_palette
+from .roles import BASE16_ROLES
 
-__version__ = "0.1.0"
-__all__ = ["PaletteConfig", "BASE16_ROLES", "generate_palette", "__version__"]
+__version__ = "0.2.0"
+__all__ = ["PaletteConfig", "BASE16_ROLES", "synthesize", "score_palette", "__version__"]

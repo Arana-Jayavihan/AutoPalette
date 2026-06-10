@@ -28,7 +28,12 @@
 
           devShells.default = pkgs.mkShell {
             packages = [
-              (pkgs.python3.withPackages (ps: [ ps.pillow ps.pytest ]))
+              (pkgs.python3.withPackages (ps: [
+                ps.pillow
+                ps.numpy
+                ps.scikit-learn
+                ps.pytest
+              ]))
               pkgs.ruff
             ];
           };

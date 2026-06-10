@@ -4,14 +4,18 @@
 
 python3Packages.buildPythonApplication {
   pname = "autopalette";
-  version = "0.1.0";
+  version = "0.2.0";
   pyproject = true;
 
   src = lib.cleanSource ../.;
 
   build-system = [ python3Packages.setuptools ];
 
-  dependencies = [ python3Packages.pillow ];
+  dependencies = [
+    python3Packages.pillow
+    python3Packages.numpy
+    python3Packages.scikit-learn
+  ];
 
   nativeCheckInputs = [ python3Packages.pytestCheckHook ];
 
