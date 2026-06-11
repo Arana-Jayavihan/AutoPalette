@@ -7,7 +7,7 @@ from autopalette.config import PaletteConfig
 from autopalette.extract.base import ColorSample, Extraction
 from autopalette.palette import synthesize
 from autopalette.quality import score_palette
-from autopalette.roles import BASE16_ROLES, CANONICAL_HUE, RAMP_ROLES
+from autopalette.roles import BASE16_ROLES, RAINBOW_ROLES, RAMP_ROLES
 
 # A spread of wallpaper-ish colours (dark blues + warm accents).
 POOL = [
@@ -67,11 +67,27 @@ def test_auto_mode_picks_dark_for_dark_image():
     assert color.relative_luminance(light["base00"]) > 0.7
 
 
-def test_anchors_are_canonical_hues():
-    pal = synthesize(_extraction(POOL), rng=random.Random(0))
-    for role in ("base08", "base0B", "base0D"):
-        got = color.hex_to_oklab(pal[role]).h
-        assert color.hue_distance(got, CANONICAL_HUE[role]) < 12, role
+def _mean_accent_chroma(pal):
+    return sum(color.hex_to_oklab(pal[r]).C for r in RAINBOW_ROLES) / len(RAINBOW_ROLES)
+
+
+def test_accents_follow_wallpaper_hue():
+    # A teal-only wallpaper should yield a teal-leaning dominant accent rather
+    # than a forced canonical red: at least one accent sits near the source hue.
+    pal = synthesize(_extraction(MONO), rng=random.Random(0))
+    teal = color.hex_to_oklab("#1b8a78").h
+    hues = [color.hex_to_oklab(pal[r]).h for r in RAINBOW_ROLES]
+    assert any(color.hue_distance(h, teal) < 25 for h in hues), hues
+
+
+def test_muted_wallpaper_yields_muted_accents():
+    # The core fidelity property: accent saturation tracks the wallpaper's, so a
+    # near-greyscale image does not produce a vivid rainbow.
+    muted = ["#403e3c", "#5a5853", "#6f6c66", "#48504a", "#574e44", "#62605a"]
+    vivid = ["#ff3030", "#30c030", "#3060ff", "#ffd000", "#d000ff", "#00d0d0"]
+    muted_pal = synthesize(_extraction(muted), rng=random.Random(0))
+    vivid_pal = synthesize(_extraction(vivid), rng=random.Random(0))
+    assert _mean_accent_chroma(muted_pal) < _mean_accent_chroma(vivid_pal)
 
 
 def test_deterministic():

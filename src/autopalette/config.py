@@ -27,17 +27,33 @@ class PaletteConfig:
     dark_fg_lightness: float = 0.90
     light_bg_lightness: float = 0.95
     light_fg_lightness: float = 0.25
-    neutral_tint_chroma: float = 0.012  # how strongly the ramp is tinted by the anchor hue
+    # The ramp is tinted by the wallpaper's overall colour cast: tint chroma is
+    # the image's (chroma-weighted) mean chroma scaled by ``neutral_tint_scale``
+    # and capped at ``neutral_tint_max`` so backgrounds stay readable. A truly
+    # greyscale wallpaper therefore yields a grey ramp (faithfully), while a
+    # colourful one gets a clearly tinted one.
+    neutral_tint_scale: float = 1.0
+    neutral_tint_max: float = 0.04
 
-    # --- accent harmonisation (OKLCh) --------------------------------------
+    # --- accents (OKLCh) ---------------------------------------------------
+    # Accents follow the wallpaper: their *hue* and *chroma* come from the
+    # image's prominent colours, so a muted wallpaper yields muted accents and a
+    # vivid one yields vivid accents. Lightness is blended toward a readable
+    # target (``accent_lightness_*``) by ``accent_lightness_faithfulness`` (0 =
+    # pin to the readable target, 1 = follow the source colour), then nudged to
+    # clear the contrast floor. ``accent_chroma_*`` is only the fallback chroma
+    # for hues that have to be *synthesised* (when the wallpaper runs out of
+    # well-separated colours).
     accent_lightness_dark: float = 0.74
     accent_chroma_dark: float = 0.14
     accent_lightness_light: float = 0.52
     accent_chroma_light: float = 0.15
+    accent_lightness_faithfulness: float = 0.3
+    accent_lightness_band: float = 0.12  # max +/- drift from the readable target
+    accent_chroma_min: float = 0.05   # visibility floor: keep accents distinct
+    accent_chroma_max: float = 0.18   # ceiling: avoid out-of-gamut oversaturation
+    accent_chroma_boost: float = 1.0  # multiplier applied to source chroma
     min_accent_hue_separation: float = 20.0  # degrees; below this two accents "collapse"
-    # How close (degrees) a wallpaper hue must be to an anchor slot to be used
-    # directly rather than hue-pulled toward the canonical anchor.
-    anchor_hue_tolerance: float = 35.0
 
     # --- extraction --------------------------------------------------------
     cluster_count: int = 16          # k-means clusters

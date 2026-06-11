@@ -14,24 +14,30 @@ wiring lives in the provided Home-Manager module and your own glue script.
 
 Rather than filtering extracted colours and hoping a wallpaper happens to contain
 ones that fit, the palette is **constructed** in perceptually-uniform OKLab space
-so it is always complete and readable:
+so it both resembles the image and stays complete and readable:
 
 * **Extraction** — Pillow decodes the image; scikit-learn k-means clusters the
   pixels in OKLab; clusters are merged by ΔE and split into *neutral* and
   *vibrant* pools (with pixel-coverage weights).
-* **Neutral ramp (base00–07)** — a derived, monotonic lightness ramp tinted by
-  the dominant hue. Always smooth and readable, independent of the pool.
-* **Accents (base08–0F)** — the *middle path*: base08/0B/0D (red/green/blue) are
-  anchored to canonical hues so syntax highlighting keeps its meaning, while the
-  rest are filled from the wallpaper's prominent hues (synthesising into gaps
-  when it runs out). Every accent is harmonised to a consistent lightness/chroma
-  and nudged until it clears the WCAG contrast floor.
+* **Neutral ramp (base00–07)** — a monotonic lightness ramp tinted by the
+  wallpaper's overall colour cast (a chroma-weighted hue average). A greyscale
+  wallpaper yields a grey ramp; a colourful one a clearly tinted ramp.
+* **Accents (base08–0F)** — drawn from the wallpaper's prominent colours. Their
+  *hue* and *chroma* follow the image, so a muted wallpaper produces muted
+  accents and a vivid one vivid accents. The most prominent, well-separated hues
+  fill the slots; when the wallpaper runs out of distinct hues the rest are
+  synthesised to fill the widest gaps on the wheel. Lightness is biased toward a
+  readable, cohesive band and nudged until it clears the WCAG contrast floor.
+  No hue is forced to a canonical value — the palette reflects what is actually
+  in the picture (so it does not preserve conventional syntax-highlighting hues).
 * **Mode** — dark or light is chosen from the wallpaper's mean luminance
   (`--mode auto`), or forced with `--mode dark|light`.
 
 A built-in quality scorer (`autopalette score`) measures contrast, ramp
-monotonicity, accent separation and cohesion. Across an 88-wallpaper corpus the
-generator scores **100% passing** (mean ≈ 96/100).
+monotonicity, accent separation and cohesion. Every generated palette is
+guaranteed to clear the *critical* checks (readable, monotonic, distinct), with
+the remaining score reflecting how much fidelity to the wallpaper costs in
+accent uniformity.
 
 ## Usage
 
