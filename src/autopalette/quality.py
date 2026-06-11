@@ -95,36 +95,27 @@ def _check_ramp_monotonic(palette: dict[str, str]) -> Check:
 
 
 def _check_accent_distinct(palette: dict[str, str], cfg: PaletteConfig) -> Check:
-    # Perceptually-identical accents (any of the 8) are always a failure, even
-    # if neutral.
-    all_accents = [palette[r] for r in ACCENT_ROLES]
-    identical = 0
-    for i in range(len(all_accents)):
-        for j in range(i + 1, len(all_accents)):
-            if color.delta_e(all_accents[i], all_accents[j]) < 0.02:
-                identical += 1
+    # Accents may reuse the wallpaper's hues (so every accent is a colour from the
+    # image); what matters is that no two of the 8 collapse into one another. They
+    # are judged distinct by perceptual distance (ΔE), not by hue angle, so a
+    # lighter and a darker shade of the same hue both count.
+    accents = [palette[r] for r in ACCENT_ROLES]
+    min_de = 999.0
+    too_close = 0
+    for i in range(len(accents)):
+        for j in range(i + 1, len(accents)):
+            d = color.delta_e(accents[i], accents[j])
+            min_de = min(min_de, d)
+            if d < cfg.accent_min_delta_e:
+                too_close += 1
 
-    # Hue spread is judged on the 7 rainbow accents only (base0F brown exempt).
-    rainbow = [color.hex_to_oklab(palette[r]) for r in RAINBOW_ROLES]
-    min_sep = 360.0
-    collapses = 0
-    for i in range(len(rainbow)):
-        for j in range(i + 1, len(rainbow)):
-            if rainbow[i].C < 0.03 or rainbow[j].C < 0.03:
-                continue
-            d = color.hue_distance(rainbow[i].h, rainbow[j].h)
-            min_sep = min(min_sep, d)
-            if d < cfg.min_accent_hue_separation:
-                collapses += 1
-
-    pairs = len(rainbow) * (len(rainbow) - 1) // 2
-    bad = collapses + identical
+    pairs = len(accents) * (len(accents) - 1) // 2
     return Check(
         name="accent_distinct",
-        passed=bad == 0,
-        score=max(0.0, 1.0 - bad / pairs),
-        detail=f"{identical} identical, {collapses} collapsing pair(s), "
-               f"min rainbow hue sep {min_sep:.0f}°",
+        passed=too_close == 0,
+        score=max(0.0, 1.0 - too_close / pairs),
+        detail=f"{too_close} pair(s) within ΔE {cfg.accent_min_delta_e:.3f}, "
+               f"min ΔE {min_de:.3f}",
         critical=True,
     )
 

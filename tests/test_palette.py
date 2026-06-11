@@ -71,13 +71,15 @@ def _mean_accent_chroma(pal):
     return sum(color.hex_to_oklab(pal[r]).C for r in RAINBOW_ROLES) / len(RAINBOW_ROLES)
 
 
-def test_accents_follow_wallpaper_hue():
-    # A teal-only wallpaper should yield a teal-leaning dominant accent rather
-    # than a forced canonical red: at least one accent sits near the source hue.
+def test_accents_all_come_from_wallpaper():
+    # A teal-only wallpaper should yield only teal-family accents: with no
+    # canonical anchoring and hue reuse, *every* accent stays near the source
+    # hue range rather than inventing colours absent from the image.
     pal = synthesize(_extraction(MONO), rng=random.Random(0))
-    teal = color.hex_to_oklab("#1b8a78").h
-    hues = [color.hex_to_oklab(pal[r]).h for r in RAINBOW_ROLES]
-    assert any(color.hue_distance(h, teal) < 25 for h in hues), hues
+    src_hues = [color.hex_to_oklab(h).h for h in MONO]
+    for role in RAINBOW_ROLES:
+        h = color.hex_to_oklab(pal[role]).h
+        assert min(color.hue_distance(h, s) for s in src_hues) < 25, (role, h)
 
 
 def test_muted_wallpaper_yields_muted_accents():

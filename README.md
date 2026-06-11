@@ -22,19 +22,21 @@ so it both resembles the image and stays complete and readable:
 * **Neutral ramp (base00–07)** — a monotonic lightness ramp tinted by the
   wallpaper's overall colour cast (a chroma-weighted hue average). A greyscale
   wallpaper yields a grey ramp; a colourful one a clearly tinted ramp.
-* **Accents (base08–0F)** — drawn from the wallpaper's prominent colours. Their
-  *hue* and *chroma* follow the image, so a muted wallpaper produces muted
+* **Accents (base08–0F)** — every accent is one of the wallpaper's own colours.
+  Their *hue* and *chroma* follow the image, so a muted wallpaper produces muted
   accents and a vivid one vivid accents. The most prominent, well-separated hues
-  fill the slots; when the wallpaper runs out of distinct hues the rest are
-  synthesised to fill the widest gaps on the wheel. Lightness is biased toward a
-  readable, cohesive band and nudged until it clears the WCAG contrast floor.
-  No hue is forced to a canonical value — the palette reflects what is actually
-  in the picture (so it does not preserve conventional syntax-highlighting hues).
+  fill the slots first; when the wallpaper has fewer distinct colours than slots,
+  the remaining accents *reuse* those hues as lighter/darker shades rather than
+  inventing colours the image doesn't contain. Lightness is biased toward a
+  readable band and nudged until each accent both clears the WCAG contrast floor
+  and stays perceptually distinct from the others. No hue is forced to a
+  canonical value — the palette reflects what is actually in the picture (so it
+  does not preserve conventional syntax-highlighting hues).
 * **Mode** — dark or light is chosen from the wallpaper's mean luminance
   (`--mode auto`), or forced with `--mode dark|light`.
 
 A built-in quality scorer (`autopalette score`) measures contrast, ramp
-monotonicity, accent separation and cohesion. Every generated palette is
+monotonicity, accent distinctness and cohesion. Every generated palette is
 guaranteed to clear the *critical* checks (readable, monotonic, distinct), with
 the remaining score reflecting how much fidelity to the wallpaper costs in
 accent uniformity.

@@ -53,7 +53,14 @@ class PaletteConfig:
     accent_chroma_min: float = 0.05   # visibility floor: keep accents distinct
     accent_chroma_max: float = 0.18   # ceiling: avoid out-of-gamut oversaturation
     accent_chroma_boost: float = 1.0  # multiplier applied to source chroma
-    min_accent_hue_separation: float = 20.0  # degrees; below this two accents "collapse"
+    # Minimum OKLab ΔE between any two accents. Accents may *reuse* the
+    # wallpaper's hues (so every accent is a colour from the image), staying
+    # distinct by lightness/chroma instead of by hue angle; this is the floor
+    # that keeps them from collapsing into one another.
+    accent_min_delta_e: float = 0.025
+    # Degrees of hue separation required before a wallpaper colour counts as a
+    # *new* accent source (vs. a reused shade of one already taken).
+    min_accent_hue_separation: float = 20.0
 
     # --- extraction --------------------------------------------------------
     cluster_count: int = 16          # k-means clusters

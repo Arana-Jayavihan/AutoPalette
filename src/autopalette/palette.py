@@ -82,11 +82,17 @@ def _build_ramp(extraction: Extraction, cfg: PaletteConfig, dark: bool) -> dict[
     return ramp
 
 
-def _ensure_contrast(c: color.OKLCh, bg: str, floor: float, dark: bool) -> color.OKLCh:
-    """Nudge lightness until the colour clears the contrast floor against bg."""
-    step = 0.02
-    for _ in range(45):
-        if color.contrast_ratio(c.to_hex(), bg) >= floor:
+def _finalize(c: color.OKLCh, bg: str, placed: list[str], floor: float,
+              min_de: float, dark: bool) -> color.OKLCh:
+    """Nudge lightness until the colour both clears the contrast floor against bg
+    *and* is perceptually distinct (>= min_de OKLab) from every already-placed
+    accent. Pushing toward the foreground end raises contrast and separates
+    same-hue shades at once, so a single monotonic walk satisfies both."""
+    step = 0.025
+    for _ in range(60):
+        hexv = c.to_hex()
+        if (color.contrast_ratio(hexv, bg) >= floor
+                and all(color.delta_e(hexv, p) >= min_de for p in placed)):
             break
         new_L = c.L + step if dark else c.L - step
         new_L = max(0.04, min(0.98, new_L))
@@ -96,35 +102,8 @@ def _ensure_contrast(c: color.OKLCh, bg: str, floor: float, dark: bool) -> color
     return c
 
 
-def _place_accent(hue: float, chroma: float, src_L: float, cfg: PaletteConfig,
-                  bg: str, dark: bool) -> str:
-    """Render one accent: wallpaper hue + (clamped) wallpaper chroma, at a
-    readability-biased lightness, nudged to clear the contrast floor."""
-    chroma = max(cfg.accent_chroma_min,
-                 min(cfg.accent_chroma_max, chroma * cfg.accent_chroma_boost))
-    target_L = cfg.accent_lightness(dark)
-    f = cfg.accent_lightness_faithfulness
-    # Follow the source lightness only partway, and keep it inside a cohesive band
-    # around the readable target so accents stay legible and don't drift down into
-    # base0F's darker territory.
-    L = target_L + (src_L - target_L) * f
-    band = cfg.accent_lightness_band
-    L = max(target_L - band, min(target_L + band, L))
-    c = color.OKLCh(L, chroma, hue)
-    return _ensure_contrast(c, bg, cfg.text_contrast_floor, dark).to_hex()
-
-
-def _synth_gap_hue(chosen: list[float]) -> float:
-    """The hue in the middle of the widest gap between already-chosen hues."""
-    if not chosen:
-        return 0.0
-    ring = sorted(chosen)
-    best_hue, best_gap = ring[0], -1.0
-    for a, b in zip(ring, ring[1:] + [ring[0] + 360.0]):
-        gap = b - a
-        if gap > best_gap:
-            best_gap, best_hue = gap, (a + gap / 2.0) % 360.0
-    return best_hue
+def _clamp_chroma(chroma: float, cfg: PaletteConfig) -> float:
+    return max(cfg.accent_chroma_min, min(cfg.accent_chroma_max, chroma * cfg.accent_chroma_boost))
 
 
 def _accent_sources(extraction: Extraction, cfg: PaletteConfig):
@@ -140,44 +119,67 @@ def _accent_sources(extraction: Extraction, cfg: PaletteConfig):
                   key=lambda s: s.weight * s.oklch.C, reverse=True)
 
 
+def _distinct_sources(extraction: Extraction, cfg: PaletteConfig, sep: float,
+                      limit: int) -> list[color.OKLCh]:
+    """The wallpaper's distinct accent colours: prominent hues at least ``sep``
+    apart, most prominent first (so we capture the image's full hue variety
+    before reusing any)."""
+    chosen: list[color.OKLCh] = []
+    for s in _accent_sources(extraction, cfg):
+        if all(color.hue_distance(s.oklch.h, c.h) >= sep for c in chosen):
+            chosen.append(s.oklch)
+            if len(chosen) >= limit:
+                break
+    return chosen
+
+
 def _build_accents(extraction: Extraction, cfg: PaletteConfig, dark: bool,
                    bg: str) -> dict[str, str]:
-    # Margin above the scored minimum so 8-bit hex quantisation can't push two
-    # accents under the separation threshold.
+    # Margin above the scored separation so 8-bit hex quantisation can't merge
+    # two colours we treated as distinct sources.
     sep = cfg.min_accent_hue_separation + 6.0
-    pool = list(_accent_sources(extraction, cfg))
+    sources = _distinct_sources(extraction, cfg, sep, len(RAINBOW_ROLES))
+    if not sources:  # wholly achromatic image: tint from the overall colour cast
+        cast_hue, _ = _color_cast(extraction)
+        sources = [color.OKLCh(cfg.accent_lightness(dark), cfg.accent_chroma_min, cast_hue)]
+
+    target = cfg.accent_lightness(dark)
+    band = cfg.accent_lightness_band
+    f = cfg.accent_lightness_faithfulness
+    # Lightness offsets for the 2nd, 3rd, ... reuse of a hue, kept within the band
+    # so a wallpaper with few colours yields distinct *shades* of its own colours.
+    shade_offsets = (band, -band, band * 0.5, -band * 0.5, band * 0.75, -band * 0.75)
 
     accents: dict[str, str] = {}
-    chosen_hues: list[float] = []
-    chosen_chromas: list[float] = []
+    placed: list[str] = []
+    used: dict[int, int] = {}
 
-    # base08..base0E: take the wallpaper's most prominent, well-separated hues;
-    # synthesise into the widest gap once the wallpaper runs out of distinct ones.
-    for role in RAINBOW_ROLES:
-        src = next((s for s in pool
-                    if all(color.hue_distance(s.oklch.h, h) >= sep for h in chosen_hues)),
-                   None)
-        if src is not None:
-            pool.remove(src)
-            hue, chroma, src_L = src.oklch.h, src.oklch.C, src.oklch.L
-        else:
-            hue = _synth_gap_hue(chosen_hues)
-            # Blend in with the accents already drawn from the wallpaper.
-            chroma = (sum(chosen_chromas) / len(chosen_chromas)
-                      if chosen_chromas else cfg.accent_chroma(dark))
-            src_L = cfg.accent_lightness(dark)
-        accents[role] = _place_accent(hue, chroma, src_L, cfg, bg, dark)
-        chosen_hues.append(hue)
-        chosen_chromas.append(chroma)
+    # base08..base0E: every accent is one of the wallpaper's colours. Once the
+    # distinct hues are spent we cycle back through them as lighter/darker shades
+    # rather than inventing hues the image doesn't contain.
+    for slot, role in enumerate(RAINBOW_ROLES):
+        si = slot % len(sources)
+        src = sources[si]
+        rep = used.get(si, 0)
+        used[si] = rep + 1
+        if rep == 0:  # first use: the wallpaper colour at a readable lightness
+            L = target + (src.L - target) * f
+        else:         # a reuse: the same hue/chroma at a distinct shade
+            L = target + shade_offsets[(rep - 1) % len(shade_offsets)]
+        L = max(target - band, min(target + band, L))
+        c = _finalize(color.OKLCh(L, _clamp_chroma(src.C, cfg), src.h),
+                      bg, placed, cfg.text_contrast_floor, cfg.accent_min_delta_e, dark)
+        accents[role] = c.to_hex()
+        placed.append(c.to_hex())
 
-    # base0F ("deprecated"): a muted, darker companion to the first accent's hue,
-    # held only to the comment-contrast floor (exempt from the rainbow rules).
-    brown_hue = chosen_hues[0]
-    brown_chroma = max(cfg.accent_chroma_min,
-                       min(cfg.accent_chroma_max, chosen_chromas[0] * 0.7))
-    brown = color.OKLCh(cfg.accent_lightness(dark) * (0.78 if dark else 1.0),
-                        brown_chroma, brown_hue)
-    accents["base0F"] = _ensure_contrast(brown, bg, cfg.comment_contrast_min, dark).to_hex()
+    # base0F ("deprecated"): a muted, darker companion of the dominant hue, held
+    # only to the comment-contrast floor (still distinct from the others).
+    dom = sources[0]
+    brown = color.OKLCh(target * (0.78 if dark else 1.0),
+                        _clamp_chroma(dom.C * 0.7, cfg), dom.h)
+    brown = _finalize(brown, bg, placed, cfg.comment_contrast_min,
+                      cfg.accent_min_delta_e, dark)
+    accents["base0F"] = brown.to_hex()
 
     return accents
 
